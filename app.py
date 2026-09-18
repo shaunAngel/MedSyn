@@ -61,6 +61,7 @@ def _init_state() -> None:
         "validation_output": None,
         "privacy_attack_output": None,
         "model_comparison_output": None,
+        "privacy_export_acknowledged": False,
         "shift_output": None,
         "longitudinal_df": None,
         "current_step": 0,
@@ -573,6 +574,55 @@ def _privacy_attack(source: pd.DataFrame, model: str) -> Dict[str, Any]:
     if function is None:
         return {"status": "error", "error": "Privacy simulation module is unavailable."}
     return function(source, generator_model=model)
+
+
+def _privacy_gate(attack_result: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Apply a transparent export-review threshold to the measured MIA result."""
+    threshold = 0.75
+
+    if not isinstance(attack_result, Mapping):
+        return {
+            "status": "not_run",
+            "threshold": threshold,
+            "attack_auroc": None,
+            "review_required": False,
+            "message": "Privacy attack has not been run.",
+        }
+
+    if attack_result.get("status") != "ok":
+        return {
+            "status": "unavailable",
+            "threshold": threshold,
+            "attack_auroc": None,
+            "review_required": False,
+            "message": "Privacy attack result is unavailable.",
+        }
+
+    auroc = attack_result.get("attack_auroc")
+
+    if auroc is None:
+        return {
+            "status": "unavailable",
+            "threshold": threshold,
+            "attack_auroc": None,
+            "review_required": False,
+            "message": "Privacy attack did not produce an AUROC.",
+        }
+
+    auroc = float(auroc)
+    review_required = auroc >= threshold
+
+    return {
+        "status": "review_required" if review_required else "pass",
+        "threshold": threshold,
+        "attack_auroc": auroc,
+        "review_required": review_required,
+        "message": (
+            "Privacy review required before export."
+            if review_required
+            else "Within the configured privacy review threshold."
+        ),
+    }
 
 
 def _model_comparison(source: pd.DataFrame, request: Mapping[str, Any]) -> Any:
@@ -1165,6 +1215,7 @@ def _page_generation() -> None:
     if st.button("Run generation", type="primary"):
         st.session_state.generation_complete = False
         st.session_state.privacy_attack_output = None
+        st.session_state.privacy_export_acknowledged = False
         st.session_state.longitudinal_df = None
         with st.spinner(f"Fitting {model_label} and sampling the requested cohort..."):
             try:
@@ -1356,6 +1407,37 @@ def _page_trust() -> None:
             )
             st.caption(attack_result["warning"])
     st.caption("Diagnostic result; not a guarantee of anonymization, HIPAA compliance, or privacy.")
+
+    privacy_gate = _privacy_gate(
+        st.session_state.privacy_attack_output
+    )
+
+    if privacy_gate["status"] == "review_required":
+        st.error(
+            f"PRIVACY REVIEW REQUIRED — membership-inference AUROC "
+            f"{privacy_gate['attack_auroc']:.3f} meets or exceeds the "
+            f"configured review threshold of "
+            f"{privacy_gate['threshold']:.2f}."
+        )
+        st.caption(
+            "Export remains available only after explicit researcher "
+            "acknowledgement of this diagnostic."
+        )
+
+        st.session_state.privacy_export_acknowledged = st.checkbox(
+            "I understand this privacy diagnostic and want to export anyway.",
+            key="privacy_export_acknowledgement",
+        )
+    elif privacy_gate["status"] == "pass":
+        st.success(
+            f"Privacy review threshold passed — membership-inference "
+            f"AUROC {privacy_gate['attack_auroc']:.3f} is below "
+            f"{privacy_gate['threshold']:.2f}."
+        )
+    else:
+        st.info(
+            "Run the privacy attack to produce the privacy export diagnostic."
+        )
 
     st.markdown("### 5. Population shift")
     achievement = _actual_proportions(generated, request) if request else pd.DataFrame()
@@ -1563,6 +1645,14 @@ def _page_export() -> None:
         else feasibility
     )
     used_model = st.session_state.generation_model_used or st.session_state.selected_generation_model
+    privacy_gate = _privacy_gate(
+        st.session_state.privacy_attack_output
+    )
+
+    privacy_blocked = (
+            privacy_gate["status"] == "review_required"
+            and not st.session_state.get("privacy_export_acknowledged", False)
+    )
     for col, label, value in (
             (c1, "Generated records", f"{len(generated):,}"),
             (c2, "Model", _model_label(used_model)),
@@ -1575,6 +1665,12 @@ def _page_export() -> None:
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         generated.to_excel(writer, index=False, sheet_name="synthetic_cohort")
+    if privacy_blocked:
+        st.warning(
+            "Export is paused because the privacy diagnostic requires "
+            "explicit researcher acknowledgement."
+        )
+
     download_col1, download_col2, download_col3 = st.columns(3, gap="small")
     with download_col1:
         st.download_button(
@@ -1584,6 +1680,7 @@ def _page_export() -> None:
             "text/csv",
             type="primary",
             use_container_width=True,
+            disabled=privacy_blocked,
         )
     with download_col2:
         st.download_button(
@@ -1593,6 +1690,7 @@ def _page_export() -> None:
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="secondary",
             use_container_width=True,
+            disabled=privacy_blocked,
         )
     report = json.dumps(
         {
@@ -1601,6 +1699,7 @@ def _page_export() -> None:
             "sanity": st.session_state.sanity_output,
             "validation": st.session_state.validation_output,
             "privacy_attack": st.session_state.privacy_attack_output,
+            "privacy_export_gate": privacy_gate,
             "model_comparison": st.session_state.model_comparison_output,
         },
         default=str,
@@ -1614,6 +1713,7 @@ def _page_export() -> None:
             "application/json",
             type="secondary",
             use_container_width=True,
+            disabled=privacy_blocked,
         )
 
 
