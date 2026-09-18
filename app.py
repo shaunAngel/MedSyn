@@ -59,6 +59,7 @@ def _init_state() -> None:
         "generated_df": None,
         "sanity_output": None,
         "validation_output": None,
+        "privacy_attack_output": None,
         "shift_output": None,
         "longitudinal_df": None,
         "current_step": 0,
@@ -76,17 +77,52 @@ def _style() -> None:
     st.markdown(
         f"""
         <style>
-        .stApp {{ background: #fbfcfd; color: {PALETTE["navy"]}; }}
+        :root {{ color-scheme: light; }}
+        .stApp, [data-testid="stAppViewContainer"] {{ background: #fbfcfd; color: {PALETTE["navy"]}; }}
         [data-testid="stSidebar"] {{ background: {PALETTE["pale"]}; border-right: 1px solid {PALETTE["line"]}; }}
+        [data-testid="stSidebar"] *, .stApp p, .stApp label, .stApp small, .stApp [data-testid="stCaptionContainer"] {{
+            color: {PALETTE["slate"]};
+        }}
+        .stApp h1, .stApp h2, .stApp h3, .stApp h4, .stApp h5, .stApp h6,
+        [data-testid="stWidgetLabel"] p, [data-testid="stWidgetLabel"] label,
+        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{
+            color: {PALETTE["navy"]} !important;
+        }}
+        [data-testid="stWidgetLabel"] p {{ font-weight: 600; }}
+        .stApp input, .stApp textarea, .stApp [data-baseweb="select"] * {{
+            color: {PALETTE["navy"]} !important;
+            background: #ffffff !important;
+        }}
+        .stApp input::placeholder {{ color: #71808A !important; }}
+        [data-testid="stSidebar"] button, [data-testid="stSidebar"] button * {{
+            color: {PALETTE["navy"]} !important;
+        }}
         .research-banner {{ border: 1px solid #E4C98A; background: #FFF8E8; color: #684D1E;
             padding: .65rem .9rem; margin-bottom: 1.1rem; font-size: .88rem; }}
-        .metric-card {{ background: white; border: 1px solid {PALETTE["line"]}; padding: .85rem 1rem; min-height: 92px; }}
+        .metric-card {{ background: white; border: 1px solid {PALETTE["line"]}; border-radius: 8px; padding: .7rem .85rem; min-height: 76px; }}
         .metric-label {{ color: {PALETTE["slate"]}; font-size: .76rem; text-transform: uppercase; letter-spacing: .06em; }}
-        .metric-value {{ color: {PALETTE["navy"]}; font: 600 1.45rem ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: .35rem; }}
-        .section-kicker {{ color: {PALETTE["blue"]}; font: 600 .74rem ui-monospace, SFMono-Regular, Menlo, monospace;
+        .metric-value {{ color: {PALETTE["navy"]}; font: 600 1.15rem ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: .3rem; }}
+        .section-kicker {{ color: {PALETTE["navy"]}; font: 600 .74rem ui-monospace, SFMono-Regular, Menlo, monospace;
             letter-spacing: .11em; text-transform: uppercase; }}
         .evidence {{ border-left: 3px solid {PALETTE["blue"]}; background: white; padding: .8rem 1rem; border-top: 1px solid {PALETTE["line"]};
-            border-right: 1px solid {PALETTE["line"]}; border-bottom: 1px solid {PALETTE["line"]}; }}
+            border-right: 1px solid {PALETTE["line"]}; border-bottom: 1px solid {PALETTE["line"]}; border-radius: 0 8px 8px 0; }}
+        .condition-card {{ background: #ffffff; border: 1px solid {PALETTE["line"]}; border-radius: 8px; padding: .75rem .9rem .45rem; margin-bottom: .7rem; }}
+        .condition-card h4 {{ color: {PALETTE["navy"]}; margin: 0 0 .35rem; font-size: .92rem; letter-spacing: .04em; }}
+        .stButton > button, [data-testid="stDownloadButton"] button {{
+            border-radius: 7px !important; min-height: 2.35rem !important; font-weight: 600 !important;
+        }}
+        [data-testid="stBaseButton-primary"], [data-testid="stDownloadButton"] button[kind="primary"] {{
+            background: {PALETTE["blue"]} !important; border: 1px solid {PALETTE["blue"]} !important; color: #ffffff !important;
+        }}
+        [data-testid="stBaseButton-primary"] *, [data-testid="stDownloadButton"] button[kind="primary"] * {{ color: #ffffff !important; }}
+        [data-testid="stBaseButton-secondary"], [data-testid="stDownloadButton"] button[kind="secondary"] {{
+            background: #ffffff !important; border: 1px solid {PALETTE["navy"]} !important; color: {PALETTE["navy"]} !important;
+        }}
+        [data-testid="stBaseButton-secondary"] *, [data-testid="stDownloadButton"] button[kind="secondary"] * {{ color: {PALETTE["navy"]} !important; }}
+        [data-testid="stBaseButton-secondary"]:hover, [data-testid="stDownloadButton"] button[kind="secondary"]:hover {{
+            background: {PALETTE["pale"]} !important; color: {PALETTE["navy"]} !important;
+        }}
+        .stButton > button:disabled {{ color: #7A8790 !important; background: #E8EDF0 !important; border-color: #CBD5DA !important; }}
         h1, h2, h3 {{ letter-spacing: -.02em; }}
         </style>
         """,
@@ -425,6 +461,48 @@ def _population_shift(
     return formatter(result) if formatter else result.to_dataframe()
 
 
+def _compact_shift_table(shift_table: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    if shift_table is None or shift_table.empty:
+        return shift_table
+    columns = [
+        column
+        for column in (
+            "Variable",
+            "Source %",
+            "Target %",
+            "Generated %",
+            "Target Shift (Δ)",
+            "Target Error (Δ)",
+            "Target Status",
+        )
+        if column in shift_table.columns
+    ]
+    return shift_table.loc[:, columns] if columns else shift_table
+
+
+def _trajectory_summary(
+    data: pd.DataFrame,
+    time_col: str,
+    value_col: str,
+    label: str,
+) -> pd.DataFrame:
+    """Compute comparable, month-ordered group means for trajectory display."""
+    frame = data[[time_col, value_col]].copy()
+    frame[value_col] = pd.to_numeric(frame[value_col], errors="coerce")
+    frame = frame.dropna(subset=[time_col, value_col])
+    if frame.empty:
+        return pd.DataFrame(columns=[time_col, value_col, "dataset"])
+    numeric_time = pd.to_numeric(frame[time_col], errors="coerce")
+    if numeric_time.notna().all():
+        frame["_time_order"] = numeric_time
+        frame = frame.sort_values("_time_order")
+    else:
+        frame = frame.sort_values(time_col)
+    summary = frame.groupby(time_col, sort=False, as_index=False)[value_col].mean()
+    summary["dataset"] = label
+    return summary
+
+
 def _condition_evidence_table(result: Mapping[str, Any]) -> pd.DataFrame:
     rows = list(result.get("conditions", []))
     if rows:
@@ -448,6 +526,49 @@ def _quality_relationship_table(validation: Mapping[str, Any]) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _privacy_attack(source: pd.DataFrame, model: str) -> Dict[str, Any]:
+    """Run the isolated privacy module only when explicitly requested in the UI."""
+    module = _import_optional("privacy")
+    function = getattr(module, "run_membership_inference_simulation", None) if module else None
+    if function is None:
+        return {"status": "error", "error": "Privacy simulation module is unavailable."}
+    return function(source, generator_model=model)
+
+
+def _privacy_distance_chart(result: Mapping[str, Any]) -> go.Figure:
+    distances = pd.DataFrame(
+        {
+            "Nearest-neighbor distance": list(result.get("train_distances", []))
+            + list(result.get("holdout_distances", [])),
+            "Group": (["Training members"] * len(result.get("train_distances", [])))
+            + (["Held-out non-members"] * len(result.get("holdout_distances", []))),
+        }
+    )
+    fig = px.histogram(
+        distances,
+        x="Nearest-neighbor distance",
+        color="Group",
+        histnorm="probability density",
+        barmode="overlay",
+        opacity=.6,
+        color_discrete_map={"Training members": PALETTE["blue"], "Held-out non-members": PALETTE["amber"]},
+        title="Nearest-neighbor distance distribution",
+        template="plotly_white",
+    )
+    fig.add_vline(x=float(result["threshold_example"]), line_dash="dash", line_color=PALETTE["slate"], annotation_text="illustrative threshold")
+    fig.update_layout(height=300, margin=dict(l=10, r=10, t=45, b=10))
+    return fig
+
+
+def _privacy_roc_chart(result: Mapping[str, Any]) -> go.Figure:
+    curve = result.get("roc_curve", {})
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=curve.get("fpr", []), y=curve.get("tpr", []), mode="lines", name=f"Attack AUROC {result['attack_auroc']:.2f}", line=dict(color=PALETTE["blue"], width=3)))
+    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", name="Random", line=dict(color=PALETTE["slate"], dash="dash")))
+    fig.update_layout(title="Membership-inference ROC curve", xaxis_title="False positive rate", yaxis_title="True positive rate", height=300, margin=dict(l=10, r=10, t=45, b=10), template="plotly_white", legend=dict(orientation="h", y=1.14, x=0))
+    return fig
 
 
 def _metric_from_mapping(data: Any, keys: Iterable[str], default: str = "Unavailable") -> Any:
@@ -573,13 +694,69 @@ def _page_cohort() -> None:
         return
     st.markdown('<div class="section-kicker">03 / cohort design</div>', unsafe_allow_html=True)
     st.title("Design the target population")
-    st.caption("These are population targets, not guarantees. Source evidence is evaluated next.")
-    target_n = st.number_input("Target synthetic population size", min_value=1, max_value=1_000_000, value=10_000, step=100)
-    diabetic_pct = st.slider("Diabetic target %", 0, 100, 60, disabled="diabetic" not in data.columns)
-    age_threshold = st.number_input("Age threshold", min_value=0, max_value=120, value=65)
-    age_pct = st.slider("Age-over-threshold target %", 0, 100, 50, disabled="age" not in data.columns)
-    adherence_threshold = st.number_input("Medication adherence threshold (%)", min_value=0, max_value=100, value=40)
-    adherence_pct = st.slider("Low-adherence target %", 0, 100, 40, disabled="medication_adherence_pct" not in data.columns)
+    st.caption("Set the population you want to study; source support is evaluated before generation.")
+    target_n = st.number_input(
+        "Target population (patients)",
+        min_value=1,
+        max_value=1_000_000,
+        value=10_000,
+        step=100,
+    )
+    diabetic_pct = 0
+    age_threshold = 65
+    age_pct = 0
+    adherence_threshold = 40
+    adherence_pct = 0
+    left, right = st.columns(2, gap="medium")
+    with left:
+        with st.container(border=True):
+            st.markdown('<div class="condition-card"><h4>DIABETES</h4>', unsafe_allow_html=True)
+            diabetic_pct = st.slider(
+                "Target percentage",
+                0,
+                100,
+                60,
+                disabled="diabetic" not in data.columns,
+                key="diabetic_target",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+        with st.container(border=True):
+            st.markdown('<div class="condition-card"><h4>MEDICATION ADHERENCE</h4>', unsafe_allow_html=True)
+            adherence_threshold = st.number_input(
+                "Low-adherence threshold (%)",
+                min_value=0,
+                max_value=100,
+                value=40,
+                key="adherence_threshold",
+            )
+            adherence_pct = st.slider(
+                "Target percentage",
+                0,
+                100,
+                40,
+                disabled="medication_adherence_pct" not in data.columns,
+                key="adherence_target",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+    with right:
+        with st.container(border=True):
+            st.markdown('<div class="condition-card"><h4>AGE</h4>', unsafe_allow_html=True)
+            age_threshold = st.number_input(
+                "Age threshold",
+                min_value=0,
+                max_value=120,
+                value=65,
+                key="age_threshold",
+            )
+            age_pct = st.slider(
+                "Target percentage",
+                0,
+                100,
+                50,
+                disabled="age" not in data.columns,
+                key="age_target",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
     conditions = []
     if "diabetic" in data.columns:
         conditions.append({"variable": "diabetic", "operator": "==", "value": 1, "target_pct": diabetic_pct})
@@ -590,13 +767,11 @@ def _page_cohort() -> None:
     if len(conditions) < 3:
         st.info("Some demo condition fields are absent; only available variables will be included.")
     st.session_state.cohort_request = {"target_n": int(target_n), "conditions": conditions}
-    st.markdown("### Request contract")
-    st.dataframe(_condition_frame(st.session_state.cohort_request), use_container_width=True, hide_index=True)
-    st.markdown("### Source → target")
-    pre_shift = _population_shift(data, st.session_state.cohort_request)
+    st.markdown("### Source → target preview")
+    pre_shift = _compact_shift_table(_population_shift(data, st.session_state.cohort_request))
     if pre_shift is not None:
         st.dataframe(pre_shift, use_container_width=True, hide_index=True)
-    if st.button("Check Feasibility", type="primary"):
+    if st.button("Check source support", type="primary", use_container_width=True):
         try:
             st.session_state.feasibility_output = _check_feasibility(data, st.session_state.cohort_request)
         except Exception as exc:
@@ -679,6 +854,7 @@ def _page_generation() -> None:
     st.info(f"Requested rows: {request['target_n']:,}  ·  Model: {model_label}")
     if st.button("Run generation", type="primary"):
         st.session_state.generation_complete = False
+        st.session_state.privacy_attack_output = None
         with st.spinner(f"Fitting {model_label} and sampling the requested cohort..."):
             try:
                 generated = _generate(data, request, model)
@@ -760,7 +936,8 @@ def _page_trust() -> None:
         st.info("Correlation diagnostics are unavailable.")
     else:
         st.dataframe(relationship_table, use_container_width=True, hide_index=True)
-    st.markdown("### 3. Privacy")
+    st.markdown("### 3. PRIVACY — WE TRIED TO BREAK IT")
+    st.markdown("#### SDMetrics privacy diagnostics")
     privacy = validation.get("privacy", {}) if isinstance(validation, Mapping) else {}
     if isinstance(privacy, Mapping) and privacy.get("value") is not None:
         st.dataframe(
@@ -779,6 +956,49 @@ def _page_trust() -> None:
     else:
         st.info("Privacy diagnostic unavailable; no privacy claim is made.")
     st.caption("Diagnostic result; not a guarantee of anonymization, HIPAA compliance, or privacy.")
+    st.divider()
+    st.markdown("#### MedSyn Self-Attack")
+    st.markdown("**Can we distinguish patients used to train the generator from patients it never saw?**")
+    st.caption("This is a simulated membership-inference attack under a specific threat model. It is not a formal privacy guarantee.")
+    attack_result = st.session_state.privacy_attack_output
+    button_label = "Re-run privacy attack" if attack_result is not None else "Run privacy attack"
+    if st.button(button_label, type="primary", key="run_privacy_attack"):
+        with st.spinner("Training the attack-only generator on patient-disjoint source data..."):
+            st.session_state.privacy_attack_output = _privacy_attack(
+                source, st.session_state.selected_generation_model
+            )
+        attack_result = st.session_state.privacy_attack_output
+    if isinstance(attack_result, Mapping):
+        if attack_result.get("status") != "ok":
+            st.warning(f"Privacy attack unavailable: {attack_result.get('error', 'Unknown error')}")
+        else:
+            attack_metrics = st.columns(3)
+            for col, label, value in zip(
+                attack_metrics,
+                ("Attack AUROC", "Training patients", "Held-out patients"),
+                (f"{attack_result['attack_auroc']:.2f}", attack_result["n_train_patients"], attack_result["n_holdout_patients"]),
+            ):
+                with col:
+                    _metric(label, value)
+            distance_metrics = pd.DataFrame(
+                [
+                    {"Patients": "Training members", "Mean nearest distance": attack_result["train_distance_mean"], "Median nearest distance": attack_result["train_distance_median"]},
+                    {"Patients": "Held-out non-members", "Mean nearest distance": attack_result["holdout_distance_mean"], "Median nearest distance": attack_result["holdout_distance_median"]},
+                ]
+            )
+            st.dataframe(distance_metrics.round(3), use_container_width=True, hide_index=True)
+            chart_col, roc_col = st.columns(2)
+            with chart_col:
+                st.plotly_chart(_privacy_distance_chart(attack_result), use_container_width=True)
+            with roc_col:
+                st.plotly_chart(_privacy_roc_chart(attack_result), use_container_width=True)
+            st.write(attack_result["interpretation"])
+            st.caption(
+                "Lower nearest-neighbor distance makes a patient more likely to be classified as a training member. "
+                "This result applies only to this simulated threat model. "
+                + attack_result["threshold_method"]
+            )
+            st.caption(attack_result["warning"])
     st.markdown("### 4. Distribution / correlation")
     quality_cols = [c for c in ("age", "systolic_bp", "activity_steps", "medication_adherence_pct", "pain_score") if c in source and c in generated]
     for selected in quality_cols:
@@ -837,8 +1057,35 @@ def _page_trust() -> None:
     longitudinal_fn = getattr(generation, "generate_longitudinal", None) if generation else None
     if time_col and longitudinal_fn:
         st.markdown("### Longitudinal explorer")
-        st.caption("Trajectory bootstrap resamples observed longitudinal change patterns; it does not mechanistically model disease progression.")
-        if st.button("Build trajectory comparison"):
+        st.caption(
+            "Trajectory bootstrap resamples observed longitudinal change patterns; "
+            "it does not mechanistically model disease progression."
+        )
+        trajectory_options = [
+            c
+            for c in (
+                "systolic_bp",
+                "medication_adherence_pct",
+                "pain_score",
+                "activity_steps",
+            )
+            if c in source and c in generated
+        ]
+        control_col, action_col = st.columns([2, 1], gap="small")
+        with control_col:
+            trajectory_col = st.selectbox(
+                "Trajectory variable",
+                trajectory_options,
+                key="trajectory_variable",
+            )
+        with action_col:
+            st.markdown("<div style='height: 1.55rem'></div>", unsafe_allow_html=True)
+            build_trajectory = st.button(
+                "Build trajectory comparison",
+                type="secondary",
+                use_container_width=True,
+            )
+        if build_trajectory:
             try:
                 baseline = generated.sort_values(time_col).groupby(
                     next((c for c in generated.columns if "patient" in c.lower() and "id" in c.lower()), generated.columns[0]),
@@ -849,14 +1096,34 @@ def _page_trust() -> None:
                 st.warning(f"Longitudinal explorer unavailable: {exc}")
         longitudinal = st.session_state.longitudinal_df
         if longitudinal is not None:
-            trajectory_col = st.selectbox(
-                "Trajectory variable",
-                [c for c in ("systolic_bp", "medication_adherence_pct", "pain_score", "activity_steps") if c in source and c in longitudinal],
-                key="trajectory_variable",
+            real_line = _trajectory_summary(source, time_col, trajectory_col, "Source")
+            synthetic_line = _trajectory_summary(
+                longitudinal, time_col, trajectory_col, "Synthetic"
             )
-            real_line = source.groupby(time_col)[trajectory_col].mean().reset_index().assign(dataset="Real")
-            synthetic_line = longitudinal.groupby(time_col)[trajectory_col].mean().reset_index().assign(dataset="Synthetic")
-            st.plotly_chart(px.line(pd.concat([real_line, synthetic_line]), x=time_col, y=trajectory_col, color="dataset", markers=True, title="Real vs synthetic trajectory"), use_container_width=True)
+            trajectory_fig = px.line(
+                pd.concat([real_line, synthetic_line], ignore_index=True),
+                x=time_col,
+                y=trajectory_col,
+                color="dataset",
+                markers=True,
+                title="Average systolic BP over time"
+                if trajectory_col == "systolic_bp"
+                else f"Average {trajectory_col} over time",
+                labels={"dataset": "", trajectory_col: trajectory_col.replace("_", " ").title()},
+                color_discrete_map={"Source": PALETTE["navy"], "Synthetic": PALETTE["blue"]},
+                template="plotly_white",
+            )
+            trajectory_fig.update_layout(
+                height=300,
+                margin=dict(l=10, r=10, t=48, b=10),
+                legend=dict(orientation="h", y=1.12, x=0),
+                paper_bgcolor="#fbfcfd",
+                plot_bgcolor="#ffffff",
+            )
+            st.plotly_chart(trajectory_fig, use_container_width=True)
+            st.caption(
+                "Group-level mean trajectory; individual patient trajectories may vary."
+            )
     _next_button(7)
 
 
@@ -866,28 +1133,71 @@ def _page_export() -> None:
         st.warning("Generate a cohort first.")
         return
     st.markdown('<div class="section-kicker">08 / export</div>', unsafe_allow_html=True)
-    st.title("Export the research cohort")
-    c1, c2, c3, c4 = st.columns(4)
-    for col, label, value in ((c1, "Generated patients", len(generated)), (c2, "Model", st.session_state.selected_generation_model), (c3, "Validation", "Completed" if st.session_state.validation_output else "Unavailable"), (c4, "Feasibility", _metric_from_mapping(st.session_state.feasibility_output, ("overall", "status"), "Unavailable"))):
+    st.title("Export your research cohort")
+    st.caption("The exported cohort includes the generated records and the diagnostics shown in this workstation.")
+    c1, c2, c3, c4 = st.columns(4, gap="small")
+    feasibility = _metric_from_mapping(
+        st.session_state.feasibility_output,
+        ("overall", "status"),
+        "Unavailable",
+    )
+    validation_status = "Complete" if st.session_state.validation_output else "Unavailable"
+    feasibility_display = (
+        f"{feasibility} / confirmed"
+        if str(feasibility).lower() == "sparse" and st.session_state.sparse_confirmed
+        else feasibility
+    )
+    for col, label, value in (
+        (c1, "Generated records", f"{len(generated):,}"),
+        (c2, "Model", "Gaussian Copula" if st.session_state.selected_generation_model == "gaussian_copula" else "CTGAN"),
+        (c3, "Feasibility", feasibility_display),
+        (c4, "Validation", validation_status),
+    ):
         with col:
             _metric(label, value)
     csv = generated.to_csv(index=False).encode("utf-8")
     excel_buffer = io.BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         generated.to_excel(writer, index=False, sheet_name="synthetic_cohort")
-    st.download_button("Download CSV", csv, "medsyn_synthetic_cohort.csv", "text/csv", type="primary")
-    st.download_button("Download Excel", excel_buffer.getvalue(), "medsyn_synthetic_cohort.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    download_col1, download_col2, download_col3 = st.columns(3, gap="small")
+    with download_col1:
+        st.download_button(
+            "Download CSV",
+            csv,
+            "medsyn_synthetic_cohort.csv",
+            "text/csv",
+            type="primary",
+            use_container_width=True,
+        )
+    with download_col2:
+        st.download_button(
+            "Download Excel",
+            excel_buffer.getvalue(),
+            "medsyn_synthetic_cohort.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="secondary",
+            use_container_width=True,
+        )
     report = json.dumps(
         {
             "cohort_request": st.session_state.cohort_request,
             "feasibility": st.session_state.feasibility_output,
             "sanity": st.session_state.sanity_output,
             "validation": st.session_state.validation_output,
+            "privacy_attack": st.session_state.privacy_attack_output,
         },
         default=str,
         indent=2,
     ).encode("utf-8")
-    st.download_button("Download Validation Report", report, "medsyn_validation_report.json", "application/json")
+    with download_col3:
+        st.download_button(
+            "Download Validation Report",
+            report,
+            "medsyn_validation_report.json",
+            "application/json",
+            type="secondary",
+            use_container_width=True,
+        )
 
 
 def _next_button(next_step: int, disabled: bool = False) -> None:
