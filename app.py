@@ -10,6 +10,7 @@ from __future__ import annotations
 import io
 import importlib
 import json
+import zipfile
 from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import numpy as np
@@ -62,6 +63,9 @@ def _init_state() -> None:
         "privacy_attack_output": None,
         "model_comparison_output": None,
         "privacy_export_acknowledged": False,
+        "k_anonymity_output": None,
+        "privacy_certificate_output": None,
+        "privacy_export_gate": None,
         "shift_output": None,
         "longitudinal_df": None,
         "current_step": 0,
@@ -1223,6 +1227,18 @@ def _page_generation() -> None:
                 st.session_state.generated_df = generated
                 st.session_state.sanity_output = _sanity(data, generated)
                 st.session_state.validation_output = _validation(data, generated)
+                validation_module = _import_optional("validation")
+                k_fn = getattr(validation_module, "compute_k_anonymity", None) if validation_module else None
+                if k_fn is not None:
+                    generated = generated.copy()
+                    if "age_over_65" not in generated.columns and "age" in generated.columns:
+                        generated["age_over_65"] = generated["age"] > 65
+                    if "low_adherence" not in generated.columns and "medication_adherence_pct" in generated.columns:
+                        generated["low_adherence"] = generated["medication_adherence_pct"] < 40
+                    qi = [c for c in ("age_over_65", "diabetic", "low_adherence") if c in generated.columns]
+                    st.session_state.k_anonymity_output = k_fn(generated, qi) if qi else {"status": "unavailable", "error": "Required quasi-identifiers unavailable."}
+                else:
+                    st.session_state.k_anonymity_output = {"status": "unavailable", "error": "k-anonymity module unavailable."}
                 st.session_state.shift_output = _population_shift(data, request, generated)
                 st.session_state.generation_model_used = model
                 st.session_state.generation_complete = True
@@ -1439,6 +1455,28 @@ def _page_trust() -> None:
             "Run the privacy attack to produce the privacy export diagnostic."
         )
 
+    st.markdown("### 5. Synthetic uniqueness / k-anonymity")
+    k_result = st.session_state.get("k_anonymity_output")
+    if isinstance(k_result, Mapping) and k_result.get("status") == "ok":
+        _metric("Minimum synthetic group size (k)", k_result.get("k_min"))
+        st.caption("Quasi-identifiers: age > 65 × diabetic × low adherence. k=1 is a uniqueness/memorization-risk signal; this is not formal k-anonymity.")
+        if k_result.get("k1_groups"):
+            st.warning(f"{len(k_result['k1_groups'])} uniquely represented synthetic profile group(s) detected.")
+    else:
+        st.info("Synthetic uniqueness diagnostic is unavailable for this cohort.")
+
+    privacy_module = _import_optional("validation")
+    gate_fn = getattr(privacy_module, "evaluate_privacy_gate", None) if privacy_module else None
+    if gate_fn is not None:
+        combined_gate = gate_fn(st.session_state.privacy_attack_output, k_result)
+        st.session_state.privacy_export_gate = combined_gate
+        if combined_gate.get("tier") == "Block" and not st.session_state.get("privacy_export_acknowledged", False):
+            st.error("PRIVACY REVIEW REQUIRED — export requires explicit researcher confirmation.")
+            st.session_state.privacy_export_acknowledged = st.checkbox(
+                "I understand the privacy diagnostics and want to export anyway.",
+                key="privacy_export_acknowledgement_combined",
+            )
+
     st.markdown("### 5. Population shift")
     achievement = _actual_proportions(generated, request) if request else pd.DataFrame()
     if not achievement.empty:
@@ -1645,14 +1683,24 @@ def _page_export() -> None:
         else feasibility
     )
     used_model = st.session_state.generation_model_used or st.session_state.selected_generation_model
-    privacy_gate = _privacy_gate(
-        st.session_state.privacy_attack_output
+    privacy_module = _import_optional("validation")
+    gate_fn = getattr(privacy_module, "evaluate_privacy_gate", None) if privacy_module else None
+    certificate_fn = getattr(privacy_module, "generate_privacy_certificate", None) if privacy_module else None
+    k_result = st.session_state.get("k_anonymity_output")
+    privacy_gate = gate_fn(st.session_state.privacy_attack_output, k_result) if gate_fn is not None else _privacy_gate(st.session_state.privacy_attack_output)
+    privacy_blocked = bool(
+        privacy_gate.get("requires_confirmation", privacy_gate.get("status") == "review_required")
+        and not st.session_state.get("privacy_export_acknowledged", False)
     )
-
-    privacy_blocked = (
-            privacy_gate["status"] == "review_required"
-            and not st.session_state.get("privacy_export_acknowledged", False)
-    )
+    dcr_result = (st.session_state.validation_output or {}).get("privacy", {}) if isinstance(st.session_state.validation_output, Mapping) else {}
+    certificate = certificate_fn(
+        st.session_state.feasibility_output,
+        dcr_result,
+        st.session_state.privacy_attack_output,
+        k_result,
+        privacy_gate,
+    ) if certificate_fn is not None else {"status": "unavailable"}
+    st.session_state.privacy_certificate_output = certificate
     for col, label, value in (
             (c1, "Generated records", f"{len(generated):,}"),
             (c2, "Model", _model_label(used_model)),
@@ -1692,24 +1740,26 @@ def _page_export() -> None:
             use_container_width=True,
             disabled=privacy_blocked,
         )
-    report = json.dumps(
-        {
-            "cohort_request": st.session_state.cohort_request,
-            "feasibility": st.session_state.feasibility_output,
-            "sanity": st.session_state.sanity_output,
-            "validation": st.session_state.validation_output,
-            "privacy_attack": st.session_state.privacy_attack_output,
-            "privacy_export_gate": privacy_gate,
-            "model_comparison": st.session_state.model_comparison_output,
-        },
-        default=str,
-        indent=2,
-    ).encode("utf-8")
+    report = json.dumps(certificate, default=str, indent=2).encode("utf-8")
+    bundle_buffer = io.BytesIO()
+    with zipfile.ZipFile(bundle_buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+        bundle.writestr("medsyn_synthetic_cohort.csv", csv)
+        bundle.writestr("medsyn_synthetic_cohort.xlsx", excel_buffer.getvalue())
+        bundle.writestr("privacy_certificate.json", report)
     with download_col3:
         st.download_button(
-            "Download Validation Report",
+            "Download Complete Bundle",
+            bundle_buffer.getvalue(),
+            "medsyn_export_bundle.zip",
+            "application/zip",
+            type="secondary",
+            use_container_width=True,
+            disabled=privacy_blocked,
+        )
+        st.download_button(
+            "Download Privacy Certificate",
             report,
-            "medsyn_validation_report.json",
+            "privacy_certificate.json",
             "application/json",
             type="secondary",
             use_container_width=True,
