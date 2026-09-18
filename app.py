@@ -361,6 +361,9 @@ def _validation(source: pd.DataFrame, generated: pd.DataFrame) -> Any:
 
 
 def _actual_proportions(generated: pd.DataFrame, request: Mapping[str, Any]) -> pd.DataFrame:
+    shift_mod = _import_optional("backend.shift") or _import_optional("shift")
+    if shift_mod and hasattr(shift_mod, "actual_proportions"):
+        return shift_mod.actual_proportions(generated, request)
     rows = []
     for condition in request.get("conditions", []):
         variable = condition["variable"]
@@ -544,8 +547,26 @@ def _page_feasibility() -> None:
         _metric("Source count", combination.get("source_count", "Unavailable"))
     with c3:
         _metric("Source percentage", f'{combination.get("source_pct", "Unavailable")}%')
+
+    two_way = result.get("two_way_combinations", []) if isinstance(result, Mapping) else []
+    if two_way:
+        with st.expander("Pairwise intersections (2-way combinations)", expanded=False):
+            st.dataframe(pd.DataFrame(two_way), use_container_width=True, hide_index=True)
+
+    three_way = result.get("three_way_combinations", []) if isinstance(result, Mapping) else []
+    if three_way:
+        with st.expander("Triplet intersections (3-way combinations)", expanded=False):
+            st.dataframe(pd.DataFrame(three_way), use_container_width=True, hide_index=True)
+
+    recs = result.get("recommendations", []) if isinstance(result, Mapping) else []
+    if recs:
+        with st.expander("Cohort Intelligence Recommendations", expanded=overall.lower() == "sparse"):
+            for rec in recs:
+                st.markdown(f"- {rec}")
+
     if overall.lower() == "sparse":
-        st.warning("Sparse source support. Generation is not recommended without explicit confirmation.")
+        conf_msg = result.get("confirmation_message") if isinstance(result, Mapping) else None
+        st.warning(conf_msg or "Sparse source support. Generation is not recommended without explicit confirmation.")
         st.session_state.sparse_confirmed = st.checkbox(
             "I understand the sparse-source warning and want to generate anyway.",
             key="sparse_confirmation",
