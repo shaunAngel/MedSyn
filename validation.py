@@ -83,6 +83,27 @@ def compute_quality_metrics(source_df, generated_df) -> dict:
     return _json(result)
 
 
+def _nearest_source_distance(source_df: pd.DataFrame, generated_df: pd.DataFrame) -> float | None:
+    common = [c for c in source_df.columns.intersection(generated_df.columns)
+              if pd.api.types.is_numeric_dtype(source_df[c])]
+    if not common or source_df.empty or generated_df.empty:
+        return None
+    source = source_df[common].apply(pd.to_numeric, errors="coerce")
+    synthetic = generated_df[common].apply(pd.to_numeric, errors="coerce")
+    medians = source.median()
+    source = source.fillna(medians).fillna(0)
+    synthetic = synthetic.fillna(medians).fillna(0)
+    scale = source.std(ddof=0).replace(0, 1).fillna(1)
+    source_values = source.to_numpy() / scale.to_numpy()
+    synthetic_values = synthetic.to_numpy() / scale.to_numpy()
+    nearest = []
+    for start in range(0, len(synthetic_values), 256):
+        batch = synthetic_values[start:start + 256]
+        distances = np.sqrt(((batch[:, None, :] - source_values[None, :, :]) ** 2).mean(axis=2))
+        nearest.append(np.min(distances, axis=1))
+    return float(np.concatenate(nearest).mean())
+
+
 def compute_privacy_metrics(source_df, generated_df) -> dict:
     """Compute a nearest-source-record distance when no supported privacy API exists."""
     if not isinstance(source_df, pd.DataFrame) or not isinstance(generated_df, pd.DataFrame):
@@ -96,7 +117,15 @@ def compute_privacy_metrics(source_df, generated_df) -> dict:
         privacy_metric = getattr(privacy_module, "NewRowSynthesis")
         metadata = metadata_cls(); metadata.detect_from_dataframe(source_df)
         value = privacy_metric.compute(real_data=source_df, synthetic_data=generated_df, metadata=metadata)
-        return _json({"status": "ok", "label": "SDMetrics", "metric_name": "NewRowSynthesis", "value": value, "interpretation": "SDMetrics privacy diagnostic; not a guarantee of anonymization, HIPAA compliance, or privacy."})
+        dcr = _nearest_source_distance(source_df, generated_df)
+        return _json({
+            "status": "ok",
+            "label": "SDMetrics + measured DCR",
+            "metric_name": "NewRowSynthesis",
+            "value": value,
+            "dcr": {"metric_name": "mean_nearest_source_record_distance", "value": dcr, "interpretation": "Supporting distance-to-closest-record diagnostic; not a formal privacy guarantee."},
+            "interpretation": "SDMetrics privacy diagnostic; not a guarantee of anonymization, HIPAA compliance, or privacy."
+        })
     except (ImportError, AttributeError, TypeError, ValueError, RuntimeError):
         pass
     source = source_df[common].apply(pd.to_numeric, errors="coerce")
@@ -110,7 +139,14 @@ def compute_privacy_metrics(source_df, generated_df) -> dict:
         distances = np.sqrt(((batch[:, None, :] - source_values[None, :, :]) ** 2).mean(axis=2))
         nearest_distances.append(np.min(distances, axis=1))
     value = float(np.concatenate(nearest_distances).mean())
-    return _json({"status": "ok", "label": "measured distance", "metric_name": "mean_nearest_source_record_distance", "value": value, "interpretation": "A computed similarity distance, not a guarantee of anonymization, HIPAA compliance, or privacy."})
+    return _json({
+        "status": "ok",
+        "label": "measured DCR",
+        "metric_name": "mean_nearest_source_record_distance",
+        "value": value,
+        "dcr": {"metric_name": "mean_nearest_source_record_distance", "value": value, "interpretation": "Supporting distance-to-closest-record diagnostic; not a formal privacy guarantee."},
+        "interpretation": "A computed similarity distance, not a guarantee of anonymization, HIPAA compliance, or privacy."
+    })
 
 
 def compute_missingness_similarity(source_df, generated_df) -> dict:
