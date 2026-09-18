@@ -49,12 +49,22 @@ def run_sanity_checks(generated_df: pd.DataFrame, schema: dict, source_df: pd.Da
             if generated_df[column].notna().any() and coerced.notna().sum() != generated_df[column].notna().sum():
                 type_errors.append(f"{column} contains non-numeric values")
     duplicate_errors = []
+    identity_errors = []
     if "patient_id" not in generated_df or "month" not in generated_df:
         duplicate_errors.append("patient_id and month are required")
     else:
         duplicate_count = int(generated_df.duplicated(["patient_id", "month"]).sum())
         if duplicate_count:
             duplicate_errors.append(f"{duplicate_count} duplicate patient_id + month rows")
+        ordering = generated_df.groupby("patient_id")["month"].apply(lambda value: value.is_monotonic_increasing)
+        if not ordering.all():
+            duplicate_errors.append("month values are not ordered within every synthetic patient")
+    if "patient_id" in generated_df and "patient_id" in source_df:
+        overlap = set(generated_df["patient_id"].dropna()).intersection(source_df["patient_id"].dropna())
+        if overlap:
+            identity_errors.append(f"{len(overlap)} source patient IDs appear in synthetic output")
+        if "month" not in generated_df and generated_df["patient_id"].duplicated().any():
+            identity_errors.append("duplicate synthetic patient IDs in baseline output")
     negative_errors = []
     for column in _NON_NEGATIVE_COLUMNS:
         if column in generated_df:
@@ -71,6 +81,7 @@ def run_sanity_checks(generated_df: pd.DataFrame, schema: dict, source_df: pd.Da
         "valid_ranges": _result(not range_errors, "Within source-derived ranges with approximately 10% tolerance" if not range_errors else "; ".join(range_errors)),
         "valid_types": _result(not type_errors, "Column types are compatible with the schema" if not type_errors else "; ".join(type_errors)),
         "duplicate_ids": _result(not duplicate_errors, "No duplicate patient_id + month keys" if not duplicate_errors else "; ".join(duplicate_errors)),
+        "identity_safety": _result(not identity_errors, "Synthetic IDs are fresh and unique where expected" if not identity_errors else "; ".join(identity_errors)),
         "negative_values": _result(not negative_errors, "No negative values in non-negative fields" if not negative_errors else "; ".join(negative_errors)),
         "missingness": _result(not missing_errors, "Missingness is within 10 percentage points of source" if not missing_errors else "; ".join(missing_errors)),
     }

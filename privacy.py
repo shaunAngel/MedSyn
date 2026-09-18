@@ -31,18 +31,14 @@ def _patient_split(
     """Split whole patients, never individual longitudinal records."""
     if id_column not in source_df.columns:
         raise ValueError(f"id_column '{id_column}' is not present in source_df")
-    patient_ids = source_df[id_column].dropna().drop_duplicates().to_numpy()
-    if len(patient_ids) < 2:
-        raise ValueError("At least two non-missing patient identifiers are required")
+    from backend.generation import train_holdout_split
     if not 0 < train_fraction < 1:
         raise ValueError("train_fraction must be strictly between 0 and 1")
-
-    rng = np.random.default_rng(random_state)
-    shuffled = rng.permutation(patient_ids)
-    train_count = min(max(int(np.floor(len(shuffled) * train_fraction)), 1), len(shuffled) - 1)
-    train_ids, holdout_ids = shuffled[:train_count], shuffled[train_count:]
-    train_df = source_df[source_df[id_column].isin(train_ids)].copy()
-    holdout_df = source_df[source_df[id_column].isin(holdout_ids)].copy()
+    train_df, holdout_df = train_holdout_split(
+        source_df, id_column, holdout_frac=1 - train_fraction, random_state=random_state
+    )
+    train_ids = train_df[id_column].dropna().drop_duplicates().to_numpy()
+    holdout_ids = holdout_df[id_column].dropna().drop_duplicates().to_numpy()
     if set(train_ids).intersection(holdout_ids):
         raise RuntimeError("Patient split overlap detected")
     if train_df.empty or holdout_df.empty:

@@ -130,7 +130,6 @@ def compute_tstr(source_df, generated_df, target_col: str) -> dict:
         from sklearn.impute import SimpleImputer
         from sklearn.linear_model import LogisticRegression, Ridge
         from sklearn.metrics import accuracy_score, f1_score, mean_absolute_error, r2_score, roc_auc_score
-        from sklearn.model_selection import train_test_split
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import OneHotEncoder, StandardScaler
     except ImportError as exc:
@@ -139,7 +138,8 @@ def compute_tstr(source_df, generated_df, target_col: str) -> dict:
         return _error("source_df and generated_df must be pandas DataFrames")
     if target_col not in source_df or target_col not in generated_df:
         return _error(f"target_col '{target_col}' must exist in both datasets")
-    features = [c for c in source_df.columns if c != target_col and c != "patient_id" and c in generated_df]
+    excluded = {target_col, "patient_id", "month", "date", "time", "timestamp"}
+    features = [c for c in source_df.columns if c not in excluded and c in generated_df]
     real = source_df[features + [target_col]].dropna(subset=[target_col]); synthetic = generated_df[features + [target_col]].dropna(subset=[target_col])
     if len(real) < 20 or len(synthetic) < 10 or not features:
         return _error("insufficient rows or features for TSTR")
@@ -147,8 +147,16 @@ def compute_tstr(source_df, generated_df, target_col: str) -> dict:
     if classification and real[target_col].nunique() < 2:
         return _error("classification target must contain at least two classes")
     try:
-        stratify = real[target_col] if classification and real[target_col].value_counts().min() >= 2 else None
-        train_real, test_real = train_test_split(real, test_size=0.25, random_state=42, stratify=stratify)
+        if "patient_id" in source_df:
+            from backend.generation import train_holdout_split
+            train_source, test_source = train_holdout_split(source_df, "patient_id", random_state=42)
+            train_real = train_source[features + [target_col]].dropna(subset=[target_col])
+            test_real = test_source[features + [target_col]].dropna(subset=[target_col])
+        else:
+            # Non-longitudinal datasets have no patient grouping contract.
+            from sklearn.model_selection import train_test_split
+            stratify = real[target_col] if classification and real[target_col].value_counts().min() >= 2 else None
+            train_real, test_real = train_test_split(real, test_size=0.25, random_state=42, stratify=stratify)
         numeric = [c for c in features if pd.api.types.is_numeric_dtype(source_df[c])]; categorical = [c for c in features if c not in numeric]
         transformers = []
         if numeric:
@@ -163,6 +171,6 @@ def compute_tstr(source_df, generated_df, target_col: str) -> dict:
             if classification and real[target_col].nunique() == 2:
                 metrics["roc_auc"] = float(roc_auc_score(actual, pipe.predict_proba(test_real[features])[:, 1]))
             return metrics
-        return _json({"status": "ok", "target_col": target_col, "task": "classification" if classification else "regression", "synthetic_to_real": fit_score(synthetic), "real_to_real": fit_score(train_real), "test_rows": len(test_real), "interpretation": "Both models use the same held-out real test set; this is task-specific utility evidence."})
+        return _json({"status": "ok", "target_col": target_col, "task": "classification" if classification else "regression", "synthetic_to_real": fit_score(synthetic), "real_to_real": fit_score(train_real), "test_rows": len(test_real), "interpretation": "Synthetic-trained and real-trained models are evaluated on the same patient-level held-out real set; this is task-specific utility evidence."})
     except (ValueError, TypeError, RuntimeError) as exc:
         return _error(f"TSTR could not be performed reliably: {exc}")

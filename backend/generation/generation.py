@@ -20,6 +20,41 @@ class GenerationError(RuntimeError):
     """Raised when a requested generation operation cannot be completed."""
 
 
+def train_holdout_split(source_df: pd.DataFrame, patient_id_col: str, holdout_frac: float = 0.2, random_state: int = 42) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Deterministically split whole patients, retaining every longitudinal row."""
+    _require_dataframe(source_df, "source_df")
+    if patient_id_col not in source_df:
+        raise ValueError(f"patient_id_col '{patient_id_col}' is not present in source_df")
+    if not 0 < holdout_frac < 1:
+        raise ValueError("holdout_frac must be strictly between 0 and 1")
+    ids = source_df[patient_id_col].dropna().drop_duplicates().to_numpy()
+    if len(ids) < 2:
+        raise ValueError("At least two non-missing patient IDs are required")
+    shuffled = np.random.default_rng(random_state).permutation(ids)
+    holdout_count = min(max(int(round(len(ids) * holdout_frac)), 1), len(ids) - 1)
+    holdout_ids = set(shuffled[:holdout_count])
+    train_df = source_df.loc[~source_df[patient_id_col].isin(holdout_ids)].copy()
+    holdout_df = source_df.loc[source_df[patient_id_col].isin(holdout_ids)].copy()
+    if set(train_df[patient_id_col]).intersection(holdout_df[patient_id_col]):
+        raise RuntimeError("Patient overlap detected after split")
+    return train_df, holdout_df
+
+
+def build_patient_baseline(df: pd.DataFrame, patient_id_col: str, time_col: str, baseline_time: Any = None) -> pd.DataFrame:
+    """Return one consistently selected baseline record per patient."""
+    _require_dataframe(df, "df")
+    if patient_id_col not in df or time_col not in df:
+        raise ValueError("patient_id_col and time_col must both be present")
+    frame = df.copy()
+    baseline_time = frame[time_col].dropna().min() if baseline_time is None else baseline_time
+    baseline = frame.loc[frame[time_col] == baseline_time].copy()
+    missing_ids = set(frame[patient_id_col].dropna()) - set(baseline[patient_id_col].dropna())
+    if missing_ids:
+        fallback = frame.loc[frame[patient_id_col].isin(missing_ids)].sort_values([patient_id_col, time_col])
+        baseline = pd.concat((baseline, fallback.groupby(patient_id_col, as_index=False).first()), ignore_index=True)
+    return baseline.drop_duplicates(patient_id_col, keep="first").reset_index(drop=True)
+
+
 def _require_dataframe(data: pd.DataFrame, name: str) -> None:
     if not isinstance(data, pd.DataFrame):
         raise TypeError(f"{name} must be a pandas DataFrame")
@@ -238,13 +273,24 @@ def generate_cross_sectional(
     n_rows: int,
     model: str = "gaussian_copula",
 ) -> pd.DataFrame:
-    """Generate a cross-sectional cohort with Gaussian Copula or CTGAN."""
+    """Generate fresh-ID synthetic baselines without identifier/time leakage."""
     _require_dataframe(source_df, "source_df")
     if request is not None and not isinstance(request, Mapping):
         raise TypeError("request must be a mapping or None")
-    if request and request.get("conditions"):
-        return _conditioned_sample(source_df, request, n_rows, model)
-    return _fit_and_sample(source_df, request, n_rows, model)
+    identifier = _find_identifier(source_df)
+    time_col = next((c for c in source_df.columns if _column_is_temporal(c, source_df[c])), None)
+    model_source = build_patient_baseline(source_df, identifier, time_col) if identifier and time_col else source_df
+    excluded = {column for column in (identifier, time_col) if column is not None}
+    clinical_columns = [column for column in model_source.columns if column not in excluded]
+    if not clinical_columns:
+        raise GenerationError("No clinical columns remain after excluding identifier and time")
+    clinical_source = model_source.loc[:, clinical_columns]
+    result = _conditioned_sample(clinical_source, request, n_rows, model) if request and request.get("conditions") else _fit_and_sample(clinical_source, request, n_rows, model)
+    if identifier:
+        result.insert(0, identifier, [f"synthetic_{index:06d}" for index in range(len(result))])
+    result.attrs["model_features"] = clinical_columns
+    result.attrs["excluded_columns"] = sorted(excluded)
+    return result
 
 
 def _find_identifier(data: pd.DataFrame) -> Optional[str]:
