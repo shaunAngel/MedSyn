@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 
 _RELATIONSHIPS = {
-    "Activity ↔ Pain": ("activity_steps", "pain_score"),
-    "Adherence ↔ Pain": ("medication_adherence_pct", "pain_score"),
+    "Activity ↔ Pain": ("activity_score", "pain_score"),
+    "Adherence ↔ Pain": ("medication_adherence", "pain_score"),
     "Age ↔ BP": ("age", "systolic_bp"),
     "Diabetic ↔ BP": ("diabetic", "systolic_bp"),
 }
@@ -108,7 +108,20 @@ def compute_privacy_metrics(source_df, generated_df) -> dict:
     """Compute a nearest-source-record distance when no supported privacy API exists."""
     if not isinstance(source_df, pd.DataFrame) or not isinstance(generated_df, pd.DataFrame):
         return _error("source_df and generated_df must be pandas DataFrames")
-    common = [c for c in source_df.columns.intersection(generated_df.columns) if pd.api.types.is_numeric_dtype(source_df[c])]
+    excluded = {
+        "patient_id",
+        "month",
+        "date",
+        "time",
+        "timestamp",
+    }
+
+    common = [
+        c
+        for c in source_df.columns.intersection(generated_df.columns)
+        if c not in excluded
+           and pd.api.types.is_numeric_dtype(source_df[c])
+    ]
     if not common or source_df.empty or generated_df.empty:
         return _error("numeric common columns and non-empty data are required for privacy distance")
     try:
@@ -250,10 +263,10 @@ def compute_k_anonymity(generated_df: pd.DataFrame, quasi_identifiers: list[str]
 
 
 def evaluate_privacy_gate(
-    membership_inference_result: dict | None,
-    k_anonymity_result: dict | None,
-    auroc_threshold: float = 0.75,
-    k_threshold: int = 1,
+        membership_inference_result: dict | None,
+        k_anonymity_result: dict | None,
+        auroc_threshold: float = 0.75,
+        k_threshold: int = 1,
 ) -> dict:
     """Apply explicit privacy-review thresholds without claiming a universal privacy boundary."""
     reasons = []
@@ -287,11 +300,11 @@ def evaluate_privacy_gate(
 
 
 def generate_privacy_certificate(
-    feasibility_result: dict | None,
-    dcr_result: dict | None,
-    membership_inference_result: dict | None,
-    k_anonymity_result: dict | None,
-    privacy_gate_result: dict | None,
+        feasibility_result: dict | None,
+        dcr_result: dict | None,
+        membership_inference_result: dict | None,
+        k_anonymity_result: dict | None,
+        privacy_gate_result: dict | None,
 ) -> dict:
     """Create a portable, JSON-serializable privacy evidence certificate."""
     from datetime import datetime, timezone

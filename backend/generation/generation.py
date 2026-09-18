@@ -201,51 +201,179 @@ def _condition_mask(data: pd.DataFrame, condition: Mapping[str, Any]) -> pd.Seri
 
 
 def _conditioned_sample(
-    source_df: pd.DataFrame,
-    request: Mapping[str, Any],
-    n_rows: int,
-    model: str,
+        source_df: pd.DataFrame,
+        request: Mapping[str, Any],
+        n_rows: int,
+        model: str,
 ) -> pd.DataFrame:
+    """
+    Generate an oversampled synthetic pool and select rows satisfying
+    the requested cohort conditions jointly.
+
+    Cohort conditions are interpreted as AND constraints.
+    """
+
     conditions = request.get("conditions") or []
+
     if not conditions:
         return _fit_and_sample(source_df, request, n_rows, model)
+
     validated = [dict(condition) for condition in conditions]
-    pool_size = max(n_rows * 5, n_rows + 100)
-    pool = _fit_and_sample(source_df, request, pool_size, model)
-    selected: List[int] = []
-    remaining = pool.index.to_numpy()
-    target_counts = [
-        max(0, min(n_rows, round(n_rows * float(condition.get("target_pct", 0)) / 100)))
+
+    target_pct_values = [
+        float(condition.get("target_pct", 100))
         for condition in validated
     ]
-    for condition, target_count in zip(validated, target_counts):
-        mask = _condition_mask(pool, condition)
-        already = int(mask.loc[selected].sum()) if selected else 0
-        needed = max(0, target_count - already)
-        candidates = [index for index in remaining if bool(mask.loc[index])]
-        selected.extend(candidates[:needed])
-        remaining = np.asarray([index for index in remaining if index not in set(selected)])
-    if len(selected) < n_rows:
-        selected.extend(list(remaining[: n_rows - len(selected)]))
-    if len(selected) < n_rows:
-        selected.extend(list(pool.index.to_numpy()[: n_rows - len(selected)]))
-    result = pool.loc[selected[:n_rows]].reset_index(drop=True)
-    actual = {
-        str(condition.get("variable")): float(_condition_mask(result, condition).mean() * 100)
-        for condition in validated
-    }
-    result.attrs["requested_proportions"] = {
-        str(condition.get("variable")): float(condition.get("target_pct", 0))
-        for condition in validated
-    }
-    result.attrs["actual_proportions"] = actual
-    result.attrs["conditional_sampling_note"] = (
-        "Targets were approximated from an oversampled synthetic pool; inspect "
-        "actual_proportions rather than treating requests as guaranteed."
+
+    target_pct = min(target_pct_values) if target_pct_values else 100.0
+
+    target_count = max(
+        0,
+        min(
+            n_rows,
+            round(n_rows * target_pct / 100.0),
+        ),
     )
+
+    rng = np.random.default_rng(42)
+
+    selected_frames: List[pd.DataFrame] = []
+    collected = 0
+    attempts = 0
+    max_attempts = 8
+
+    # Generate repeated synthetic pools until the requested number
+    # of jointly matching records is obtained or the retry limit
+    # is reached.
+    while collected < target_count and attempts < max_attempts:
+        attempts += 1
+
+        remaining_needed = target_count - collected
+
+        pool_size = max(
+            remaining_needed * 10,
+            n_rows * 10,
+            500,
+            )
+
+        pool = _fit_and_sample(
+            source_df,
+            request,
+            pool_size,
+            model,
+        )
+
+        # Apply ALL conditions jointly.
+        joint_mask = pd.Series(True, index=pool.index)
+
+        for condition in validated:
+            joint_mask &= _condition_mask(pool, condition)
+
+        matching = pool.loc[joint_mask].copy()
+
+        if not matching.empty:
+            matching = matching.sample(
+                frac=1,
+                random_state=42 + attempts,
+            )
+
+            take = min(
+                len(matching),
+                remaining_needed,
+            )
+
+            selected_frames.append(
+                matching.iloc[:take]
+            )
+
+            collected += take
+
+    # Combine all successful matches.
+    if selected_frames:
+        result = pd.concat(
+            selected_frames,
+            ignore_index=True,
+        )
+    else:
+        result = source_df.iloc[:0].copy()
+
+    # For non-100% targets, fill the remainder with unrestricted
+    # synthetic records.
+    if target_pct < 100 and len(result) < n_rows:
+        fill_needed = n_rows - len(result)
+
+        fill_pool = _fit_and_sample(
+            source_df,
+            request,
+            max(fill_needed * 3, fill_needed),
+            model,
+        )
+
+        selected_fill = fill_pool.iloc[:fill_needed].copy()
+
+        result = pd.concat(
+            [result, selected_fill],
+            ignore_index=True,
+        )
+
+    # Never silently insert records that violate a 100% cohort
+    # constraint.
+    result = result.iloc[:n_rows].reset_index(drop=True)
+
+    actual = {
+        str(condition.get("variable")): float(
+            _condition_mask(result, condition).mean() * 100
+        )
+        if len(result)
+        else 0.0
+        for condition in validated
+    }
+
+    if len(result):
+        joint_result_mask = pd.Series(
+            True,
+            index=result.index,
+        )
+
+        for condition in validated:
+            joint_result_mask &= _condition_mask(
+                result,
+                condition,
+            )
+
+        joint_actual = float(
+            joint_result_mask.mean() * 100
+        )
+    else:
+        joint_actual = 0.0
+
+    result.attrs["requested_proportions"] = {
+        str(condition.get("variable")): float(
+            condition.get("target_pct", 100)
+        )
+        for condition in validated
+    }
+
+    result.attrs["actual_proportions"] = actual
+
+    result.attrs["joint_requested_proportion"] = target_pct
+
+    result.attrs["joint_actual_proportion"] = joint_actual
+
+    result.attrs["requested_rows"] = n_rows
+    result.attrs["generated_rows"] = len(result)
+    result.attrs["sampling_attempts"] = attempts
+
+    result.attrs["conditional_sampling_note"] = (
+        "Conditions were applied jointly as an AND-constrained "
+        "cohort. Synthetic candidates were repeatedly sampled "
+        "from the generative model until the requested cohort "
+        "size was reached or the sampling retry limit was met. "
+        "Inspect achieved proportions and generated row count "
+        "rather than treating requests as guaranteed."
+    )
+
     return result
-
-
 def _clean_output(result: pd.DataFrame, source_df: pd.DataFrame) -> pd.DataFrame:
     result = result.replace([np.inf, -np.inf], np.nan)
     for column in result.columns:
