@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Activity, AlertTriangle, ArrowRight, BarChart2 } from 'lucide-react';
-import { getDatasetDNA } from '../services/api';
+import { getDatasetDNA } from '../services/mockEngine';
 import DemographicsChart from '../components/charts/DemographicsChart';
 
 export default function DatasetDNAView({ setActiveView }) {

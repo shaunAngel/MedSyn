@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { FileSpreadsheet, Search, User, ChevronRight, ScatterChart } from 'lucide-react';
 import { LineChart as ReLineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { getPopulationExplorerData } from '../services/api';
+import { getPopulationExplorerData } from '../services/mockEngine';
 import ScatterPlotChart from '../components/charts/ScatterPlotChart';
 
 export default function PopulationExplorerView() {

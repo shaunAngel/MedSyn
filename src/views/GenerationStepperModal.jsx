@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Cpu, CheckCircle2, RefreshCw } from 'lucide-react';
-import { generateSyntheticCohort } from '../services/api';
+import { generateSyntheticCohort } from '../services/mockEngine';
 
 export default function GenerationStepperModal({ isOpen, config, onComplete, onError }) {
   const [phase, setPhase] = useState(0);

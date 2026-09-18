@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Download, ShieldCheck, FileText, CheckCircle2, Copy, Sparkles } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { getTrustReport } from '../services/api';
+import { getTrustReport } from '../services/mockEngine';
 
 export default function ExportHubView() {
   const [report, setReport] = useState(null);

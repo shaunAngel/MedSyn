@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ShieldCheck, Activity, Lock, ArrowRight, Table } from 'lucide-react';
-import { getTrustReport } from '../services/api';
+import { getTrustReport } from '../services/mockEngine';
 import KDEChart from '../components/charts/KDEChart';
 import CorrelationHeatmap from '../components/charts/CorrelationHeatmap';
 

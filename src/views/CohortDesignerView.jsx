@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Sliders, ShieldCheck, AlertTriangle, Play, RefreshCw, CheckCircle2, Lock } from 'lucide-react';
-import { evaluateFeasibility } from '../services/api';
+import { evaluateFeasibility } from '../services/mockEngine';
 
 export default function CohortDesignerView({ onStartGeneration }) {
   const [filters, setFilters] = useState({
