@@ -174,3 +174,107 @@ def compute_tstr(source_df, generated_df, target_col: str) -> dict:
         return _json({"status": "ok", "target_col": target_col, "task": "classification" if classification else "regression", "synthetic_to_real": fit_score(synthetic), "real_to_real": fit_score(train_real), "test_rows": len(test_real), "interpretation": "Synthetic-trained and real-trained models are evaluated on the same patient-level held-out real set; this is task-specific utility evidence."})
     except (ValueError, TypeError, RuntimeError) as exc:
         return _error(f"TSTR could not be performed reliably: {exc}")
+
+
+def compute_k_anonymity(generated_df: pd.DataFrame, quasi_identifiers: list[str]) -> dict:
+    """Measure synthetic quasi-identifier uniqueness; this is a disclosure-risk diagnostic, not formal k-anonymity."""
+    if not isinstance(generated_df, pd.DataFrame) or generated_df.empty:
+        return _error("generated_df must be a non-empty pandas DataFrame")
+    missing = [column for column in quasi_identifiers if column not in generated_df.columns]
+    if missing:
+        return _error(f"quasi-identifiers missing from generated data: {missing}")
+    frame = generated_df[quasi_identifiers].copy()
+    frame = frame.fillna("<MISSING>")
+    counts = frame.value_counts(dropna=False)
+    if counts.empty:
+        return _error("no quasi-identifier groups could be computed")
+    k_min = int(counts.min())
+    groups = []
+    for values, count in counts.items():
+        if not isinstance(values, tuple):
+            values = (values,)
+        groups.append({
+            "values": {column: _json(value) for column, value in zip(quasi_identifiers, values)},
+            "count": int(count),
+        })
+    k1_groups = [group for group in groups if group["count"] == 1]
+    bucket = "HIGH_RISK" if k_min == 1 else "MODERATE_RISK" if k_min < 5 else "LOW_RISK"
+    return _json({
+        "status": "ok",
+        "k_min": k_min,
+        "quasi_identifiers": list(quasi_identifiers),
+        "group_counts": groups,
+        "k1_groups": k1_groups,
+        "bucket": bucket,
+        "interpretation": (
+            "Smallest synthetic quasi-identifier group size. k=1 flags a uniquely represented "
+            "synthetic profile and is a memorization-risk signal; this is not formal k-anonymity."
+        ),
+    })
+
+
+def evaluate_privacy_gate(
+    membership_inference_result: dict | None,
+    k_anonymity_result: dict | None,
+    auroc_threshold: float = 0.75,
+    k_threshold: int = 1,
+) -> dict:
+    """Apply explicit privacy-review thresholds without claiming a universal privacy boundary."""
+    reasons = []
+    auroc = membership_inference_result.get("attack_auroc") if isinstance(membership_inference_result, dict) else None
+    if auroc is not None and float(auroc) >= auroc_threshold:
+        reasons.append(
+            f"Membership-inference AUROC {float(auroc):.3f} meets/exceeds review threshold {auroc_threshold:.2f}."
+        )
+    k_min = k_anonymity_result.get("k_min") if isinstance(k_anonymity_result, dict) else None
+    if k_min is not None and int(k_min) <= k_threshold:
+        reasons.append(
+            f"Synthetic quasi-identifier minimum group size k={int(k_min)} meets/exceeds the configured uniqueness-risk threshold."
+        )
+    blocked = bool(reasons)
+    return _json({
+        "status": "Block" if blocked else "Pass",
+        "tier": "Block" if blocked else "Pass",
+        "passed": not blocked,
+        "requires_confirmation": blocked,
+        "reasons": reasons,
+        "auroc_threshold": float(auroc_threshold),
+        "k_threshold": int(k_threshold),
+        "attack_auroc": None if auroc is None else float(auroc),
+        "k_min": None if k_min is None else int(k_min),
+        "interpretation": (
+            "Export requires explicit researcher confirmation because a configured privacy-review threshold was breached."
+            if blocked else
+            "No configured privacy-review threshold was breached; this is not a formal privacy guarantee."
+        ),
+    })
+
+
+def generate_privacy_certificate(
+    feasibility_result: dict | None,
+    dcr_result: dict | None,
+    membership_inference_result: dict | None,
+    k_anonymity_result: dict | None,
+    privacy_gate_result: dict | None,
+) -> dict:
+    """Create a portable, JSON-serializable privacy evidence certificate."""
+    from datetime import datetime, timezone
+    gate = privacy_gate_result or {}
+    overall = (
+        "EXPORTED_AFTER_MANUAL_CONFIRMATION"
+        if gate.get("requires_confirmation")
+        else "PASS"
+    )
+    return _json({
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "feasibility_tier": (feasibility_result or {}).get("overall", (feasibility_result or {}).get("overall_tier")),
+        "dcr": dcr_result or {"status": "unavailable"},
+        "membership_inference": membership_inference_result or {"status": "unavailable"},
+        "k_anonymity": k_anonymity_result or {"status": "unavailable"},
+        "privacy_gate": gate,
+        "overall_verdict": overall,
+        "disclaimer": (
+            "For research and testing purposes only. Not clinically validated. "
+            "Not a formal privacy guarantee — no differential privacy is applied."
+        ),
+    })
