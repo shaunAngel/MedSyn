@@ -1,4 +1,5 @@
 import React from 'react';
+import CohortDNA from '../components/CohortDNA';
 import { ArrowRight, ShieldCheck, Database, Sliders, Dna, Activity, Lock, Cpu, CheckCircle2, AlertTriangle, Play } from 'lucide-react';
 
 export default function LandingPage({ setActiveView, openAuthModal }) {
@@ -43,53 +44,26 @@ export default function LandingPage({ setActiveView, openAuthModal }) {
           </button>
         </div>
 
-        {/* Interactive Floating Card Preview: Dataset DNA Live Card */}
-        <div className="pt-12 max-w-5xl mx-auto">
-          <div className="animate-float relative rounded-[28px] bg-[var(--color-card-white)] p-6 sm:p-8 shadow-2xl border border-[var(--color-border-subtle)] text-left glow-terracotta">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[var(--color-border-subtle)] pb-4 mb-6">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-[#6B1D2F] text-white flex items-center justify-center">
-                  <Database className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-serif font-bold text-lg text-[var(--color-cocoa-text)]">
-                    Ground-Truth Dataset DNA Preview
-                  </h3>
-                  <p className="text-xs text-[var(--color-cocoa-subtext)]">demo_patients.csv • 500 Patients × 6 Months (3,000 Rows)</p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#EAF4EC] text-[#2F6B3F]">
-                  Feasibility Gate: Ready
-                </span>
-                <span className="px-3 py-1 rounded-full text-xs font-bold bg-[#6B1D2F]/10 text-[#6B1D2F] dark:text-[#E89B72]">
-                  Activity ↔ Pain ≈ -0.56
-                </span>
-              </div>
+        {/* Interactive 3D Cohort DNA */}
+        <div className="pt-8 max-w-5xl mx-auto">
+          <div className="rounded-[32px] bg-[var(--color-card-white)] border border-[var(--color-border-subtle)] shadow-2xl overflow-hidden glow-terracotta">
+            <div className="px-6 sm:px-8 pt-7 text-center">
+              <p className="text-[10px] font-bold tracking-[0.2em] text-[#6B1D2F] dark:text-[#E89B72]">
+                SOURCE POPULATION INTELLIGENCE
+              </p>
+              <h2 className="font-serif text-2xl sm:text-3xl font-bold text-[var(--color-cocoa-text)] mt-2">
+                Explore your Cohort DNA
+              </h2>
+              <p className="text-xs sm:text-sm text-[var(--color-cocoa-subtext)] max-w-xl mx-auto mt-2">
+                Six clinical dimensions form the foundation of Synora's cohort intelligence.
+                Click the 3D model to inspect the dataset behind your synthetic cohorts.
+              </p>
             </div>
 
-            {/* Quick Metrics Grid */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-              <div className="p-4 rounded-2xl bg-[var(--color-cream-surface)] border border-[var(--color-border-subtle)]">
-                <span className="block text-2xl font-bold font-serif text-[#6B1D2F] dark:text-[#E89B72]">500</span>
-                <span className="text-[11px] font-semibold text-[var(--color-cocoa-subtext)]">Unique Patients</span>
-              </div>
-              <div className="p-4 rounded-2xl bg-[var(--color-cream-surface)] border border-[var(--color-border-subtle)]">
-                <span className="block text-2xl font-bold font-serif text-[#6B1D2F] dark:text-[#E89B72]">100</span>
-                <span className="text-[11px] font-semibold text-[var(--color-cocoa-subtext)]">Diabetic Subgroup</span>
-              </div>
-              <div className="p-4 rounded-2xl bg-[var(--color-cream-surface)] border border-[var(--color-border-subtle)]">
-                <span className="block text-2xl font-bold font-serif text-[#6B1D2F] dark:text-[#E89B72]">25</span>
-                <span className="text-[11px] font-semibold text-[var(--color-cocoa-subtext)]">Diabetic + Age &gt; 65</span>
-              </div>
-              <div className="p-4 rounded-2xl bg-[var(--color-coral-bg)] border border-[var(--color-coral-risk)]/30">
-                <span className="block text-2xl font-bold font-serif text-[#B83B3B]">2</span>
-                <span className="text-[11px] font-bold text-[#B83B3B]">Triple Combo (Sparse!)</span>
-              </div>
-            </div>
+            <CohortDNA setActiveView={setActiveView} />
           </div>
         </div>
+
       </section>
 
       {/* DUAL SYMMETRIC GATES ARCHITECTURE SECTION */}
